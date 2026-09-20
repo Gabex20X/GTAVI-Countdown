@@ -2,7 +2,7 @@
 
 A simple Java desktop countdown widget for GTA VI's release on November 19th, 2026 (00:00 GMT-3).
 
-It renders as a borderless, transparent, always-on-top overlay you can drag anywhere on your desktop, so it blends in like part of your wallpaper. Closes from a system tray icon.
+It renders as a borderless, transparent overlay you can drag anywhere on your desktop, so it blends in like part of your wallpaper. It always stays behind other windows (like a desktop widget) — if another window covers that area, the widget is hidden behind it until you can see the desktop again. Closes from a system tray icon.
 
 ## Requirements
 
@@ -24,7 +24,7 @@ The countdown text uses the **Pricedown** font (the GTA logo typeface), which is
    src/fonts/Pricedown.otf
    ```
 
-If you skip this step, the app still works — it falls back to a bold system font automatically.
+If you skip this step, the app still works. It falls back to a bold system font automatically.
 
 ### 2. Build
 
@@ -44,6 +44,17 @@ dist\GTA6Countdown\GTA6Countdown.exe
 ```
 
 Drag the widget with the left mouse button to position it. Right-click the tray icon to exit.
+
+You can also resize parts of it with a plain click (no dragging):
+
+| Click on          | Effect                  |
+|-------------------|--------------------------|
+| "V" of the logo   | Grows the logo            |
+| "I" of the logo   | Shrinks the logo          |
+| Hours digits      | Grows the countdown text  |
+| Seconds digits    | Shrinks the countdown text |
+
+Sizes and position are remembered between runs.
 
 ### 4. (Optional) Start with Windows
 

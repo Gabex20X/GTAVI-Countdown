@@ -58,34 +58,55 @@ public class CountdownApp {
     }
 
     private void start() {
+        Settings settings = loadSettings();
+
         GraphicsDevice device = GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice();
         if (device.isWindowTranslucencySupported(GraphicsDevice.WindowTranslucency.PERPIXEL_TRANSLUCENT)) {
             window.setBackground(new Color(0, 0, 0, 0));
         }
-        window.setAlwaysOnTop(true);
+
+        panel.applySizes(settings.logoHeight, settings.fontSize);
+        panel.setOnSizeChanged(() -> {
+            window.pack();
+            saveSettings();
+        });
+
+        window.setFocusableWindowState(false);
         window.setContentPane(panel);
         window.pack();
-        window.setLocation(loadPosition());
+        window.setLocation(settings.x, settings.y);
         window.setVisible(true);
+        window.toBack();
 
-        enableDrag();
+        enableMouseHandling();
         setupTray();
 
-        Timer timer = new Timer(1000, e -> panel.setRemaining(Duration.between(ZonedDateTime.now(TARGET_ZONE), TARGET)));
+        Timer timer = new Timer(1000, e -> {
+            panel.setRemaining(Duration.between(ZonedDateTime.now(TARGET_ZONE), TARGET));
+            window.toBack();
+        });
         timer.setInitialDelay(0);
         timer.start();
     }
 
-    private void enableDrag() {
-        MouseAdapter dragHandler = new MouseAdapter() {
+    private void enableMouseHandling() {
+        MouseAdapter handler = new MouseAdapter() {
+            private Point pressScreenPoint;
+            private Point pressPanelPoint;
+
             @Override
             public void mousePressed(MouseEvent e) {
                 dragOffset = e.getPoint();
+                pressScreenPoint = e.getLocationOnScreen();
+                pressPanelPoint = e.getPoint();
             }
 
             @Override
             public void mouseReleased(MouseEvent e) {
-                savePosition(window.getLocation());
+                saveSettings();
+                if (e.getLocationOnScreen().distance(pressScreenPoint) < 4) {
+                    panel.handleClick(pressPanelPoint);
+                }
             }
 
             @Override
@@ -94,8 +115,8 @@ public class CountdownApp {
                 window.setLocation(current.x + e.getX() - dragOffset.x, current.y + e.getY() - dragOffset.y);
             }
         };
-        panel.addMouseListener(dragHandler);
-        panel.addMouseMotionListener(dragHandler);
+        panel.addMouseListener(handler);
+        panel.addMouseMotionListener(handler);
     }
 
     private void setupTray() {
@@ -148,31 +169,47 @@ public class CountdownApp {
         return Paths.get(appData, "GTA6Countdown", "position.properties");
     }
 
-    private Point loadPosition() {
+    private static class Settings {
+        int x;
+        int y;
+        int logoHeight;
+        float fontSize;
+    }
+
+    private Settings loadSettings() {
+        Settings settings = new Settings();
         try {
             Properties props = new Properties();
             try (InputStream in = Files.newInputStream(configPath())) {
                 props.load(in);
             }
-            int x = Integer.parseInt(props.getProperty("x"));
-            int y = Integer.parseInt(props.getProperty("y"));
-            return new Point(x, y);
+            settings.x = Integer.parseInt(props.getProperty("x"));
+            settings.y = Integer.parseInt(props.getProperty("y"));
+            settings.logoHeight = Integer.parseInt(props.getProperty("logoHeight", "60"));
+            settings.fontSize = Float.parseFloat(props.getProperty("fontSize", "36"));
         } catch (Exception e) {
             Rectangle screen = GraphicsEnvironment.getLocalGraphicsEnvironment()
                     .getDefaultScreenDevice().getDefaultConfiguration().getBounds();
-            return new Point(screen.width - 380, screen.height - 205);
+            settings.x = screen.width - 380;
+            settings.y = screen.height - 205;
+            settings.logoHeight = 60;
+            settings.fontSize = 36f;
         }
+        return settings;
     }
 
-    private void savePosition(Point point) {
+    private void saveSettings() {
         try {
             Path path = configPath();
             Files.createDirectories(path.getParent());
             Properties props = new Properties();
-            props.setProperty("x", String.valueOf(point.x));
-            props.setProperty("y", String.valueOf(point.y));
+            Point loc = window.getLocation();
+            props.setProperty("x", String.valueOf(loc.x));
+            props.setProperty("y", String.valueOf(loc.y));
+            props.setProperty("logoHeight", String.valueOf(panel.getLogoHeight()));
+            props.setProperty("fontSize", String.valueOf(panel.getFontSize()));
             try (OutputStream out = Files.newOutputStream(path)) {
-                props.store(out, "GTA VI Countdown window position");
+                props.store(out, "GTA VI Countdown settings");
             }
         } catch (IOException ignored) {
         }
@@ -182,28 +219,119 @@ public class CountdownApp {
         private static final Color TITLE_FILL = new Color(0xB38EB7);
         private static final Color NUMBERS_FILL = new Color(0xE99AAD);
         private static final Color OUTLINE = new Color(0xFDF4EF);
-        private static final float FONT_SIZE = 36f;
+
+        private static final int MIN_LOGO_HEIGHT = 30;
+        private static final int MAX_LOGO_HEIGHT = 150;
+        private static final int LOGO_STEP = 6;
+        private static final float MIN_FONT_SIZE = 18f;
+        private static final float MAX_FONT_SIZE = 64f;
+        private static final float FONT_STEP = 2f;
+        private static final double LOGO_V_I_SPLIT = 0.70;
+
+        private static final int TOP_MARGIN = 10;
+        private static final int GAP_AFTER_LOGO = 6;
+        private static final int GAP_BETWEEN_LINES = 4;
+        private static final int BOTTOM_MARGIN = 10;
+        private static final int SIDE_MARGIN = 20;
+        private static final String WIDTH_TEMPLATE = "99d 00:00:00";
+
+        private final Rectangle logoVZone = new Rectangle();
+        private final Rectangle logoIZone = new Rectangle();
+        private final Rectangle hoursZone = new Rectangle();
+        private final Rectangle secondsZone = new Rectangle();
+
+        private int logoHeight = 60;
+        private float fontSize = 36f;
 
         private String line1 = "GTA VI";
-        private String line2 = "--";
+        private boolean finished = false;
+        private String daysPart = "0d";
+        private String hoursPart = "00";
+        private String minutesPart = "00";
+        private String secondsPart = "00";
+
+        private Runnable onSizeChanged = () -> { };
 
         CountdownPanel() {
             setOpaque(false);
-            setPreferredSize(new Dimension(360, 165));
+            updatePreferredSize();
+        }
+
+        void setOnSizeChanged(Runnable callback) {
+            this.onSizeChanged = callback;
+        }
+
+        void applySizes(int logoHeight, float fontSize) {
+            this.logoHeight = clamp(logoHeight, MIN_LOGO_HEIGHT, MAX_LOGO_HEIGHT);
+            this.fontSize = clamp(fontSize, MIN_FONT_SIZE, MAX_FONT_SIZE);
+            updatePreferredSize();
+        }
+
+        int getLogoHeight() {
+            return logoHeight;
+        }
+
+        float getFontSize() {
+            return fontSize;
         }
 
         void setRemaining(Duration remaining) {
             line1 = "GTA VI";
-            if (remaining.isNegative()) {
-                line2 = "JA CHEGOU!";
-            } else {
-                long days = remaining.toDays();
-                long hours = remaining.toHours() % 24;
-                long minutes = remaining.toMinutes() % 60;
-                long seconds = remaining.getSeconds() % 60;
-                line2 = String.format("%dd %02d:%02d:%02d", days, hours, minutes, seconds);
+            finished = remaining.isNegative();
+            if (!finished) {
+                daysPart = remaining.toDays() + "d";
+                hoursPart = String.format("%02d", remaining.toHours() % 24);
+                minutesPart = String.format("%02d", remaining.toMinutes() % 60);
+                secondsPart = String.format("%02d", remaining.getSeconds() % 60);
             }
             repaint();
+        }
+
+        void handleClick(Point p) {
+            if (logoVZone.contains(p)) {
+                changeLogoHeight(LOGO_STEP);
+            } else if (logoIZone.contains(p)) {
+                changeLogoHeight(-LOGO_STEP);
+            } else if (hoursZone.contains(p)) {
+                changeFontSize(FONT_STEP);
+            } else if (secondsZone.contains(p)) {
+                changeFontSize(-FONT_STEP);
+            }
+        }
+
+        private void changeLogoHeight(int delta) {
+            logoHeight = clamp(logoHeight + delta, MIN_LOGO_HEIGHT, MAX_LOGO_HEIGHT);
+            updatePreferredSize();
+            onSizeChanged.run();
+            repaint();
+        }
+
+        private void changeFontSize(float delta) {
+            fontSize = clamp(fontSize + delta, MIN_FONT_SIZE, MAX_FONT_SIZE);
+            updatePreferredSize();
+            onSizeChanged.run();
+            repaint();
+        }
+
+        private void updatePreferredSize() {
+            Font font = BASE_FONT.deriveFont(fontSize);
+            FontMetrics fm = getFontMetrics(font);
+            int lineHeight = fm.getAscent() + fm.getDescent();
+
+            int logoWidth = LOGO != null ? Math.round(logoHeight * LOGO.getWidth() / (float) LOGO.getHeight()) : 0;
+            int contentWidth = Math.max(logoWidth, Math.max(fm.stringWidth(line1), fm.stringWidth(WIDTH_TEMPLATE)));
+
+            int width = contentWidth + SIDE_MARGIN * 2;
+            int height = TOP_MARGIN + logoHeight + GAP_AFTER_LOGO + lineHeight + GAP_BETWEEN_LINES + lineHeight + BOTTOM_MARGIN;
+            setPreferredSize(new Dimension(width, height));
+        }
+
+        private static int clamp(int v, int min, int max) {
+            return Math.max(min, Math.min(max, v));
+        }
+
+        private static float clamp(float v, float min, float max) {
+            return Math.max(min, Math.min(max, v));
         }
 
         @Override
@@ -215,36 +343,63 @@ public class CountdownApp {
             g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
 
             if (LOGO != null) {
-                int logoHeight = 60;
                 int logoWidth = Math.round(logoHeight * LOGO.getWidth() / (float) LOGO.getHeight());
-                g2.drawImage(LOGO, (getWidth() - logoWidth) / 2, 8, logoWidth, logoHeight, null);
+                int logoX = (getWidth() - logoWidth) / 2;
+                g2.drawImage(LOGO, logoX, TOP_MARGIN, logoWidth, logoHeight, null);
+
+                int splitX = logoX + (int) Math.round(logoWidth * LOGO_V_I_SPLIT);
+                logoVZone.setBounds(logoX, TOP_MARGIN, splitX - logoX, logoHeight);
+                logoIZone.setBounds(splitX, TOP_MARGIN, logoX + logoWidth - splitX, logoHeight);
+            } else {
+                logoVZone.setBounds(0, 0, 0, 0);
+                logoIZone.setBounds(0, 0, 0, 0);
             }
 
-            Font font = BASE_FONT.deriveFont(FONT_SIZE);
-            drawOutlined(g2, line1, font, TITLE_FILL, OUTLINE, 104);
-            drawOutlined(g2, line2, font, NUMBERS_FILL, OUTLINE, 146);
+            Font font = BASE_FONT.deriveFont(fontSize);
+            FontMetrics fm = g2.getFontMetrics(font);
+            int lineHeight = fm.getAscent() + fm.getDescent();
+
+            int line1Top = TOP_MARGIN + logoHeight + GAP_AFTER_LOGO;
+            int line2Top = line1Top + lineHeight + GAP_BETWEEN_LINES;
+
+            drawOutlined(g2, fm, line1, font, TITLE_FILL, OUTLINE, line1Top + fm.getAscent());
+
+            String line2 = finished ? "JA CHEGOU!" : daysPart + " " + hoursPart + ":" + minutesPart + ":" + secondsPart;
+            double line2X = drawOutlined(g2, fm, line2, font, NUMBERS_FILL, OUTLINE, line2Top + fm.getAscent());
+
+            if (!finished) {
+                String beforeHours = daysPart + " ";
+                int hoursStart = (int) Math.round(line2X + fm.stringWidth(beforeHours));
+                int hoursWidth = fm.stringWidth(hoursPart);
+                hoursZone.setBounds(hoursStart, line2Top, hoursWidth, lineHeight);
+
+                String beforeSeconds = beforeHours + hoursPart + ":" + minutesPart + ":";
+                int secondsStart = (int) Math.round(line2X + fm.stringWidth(beforeSeconds));
+                int secondsWidth = fm.stringWidth(secondsPart);
+                secondsZone.setBounds(secondsStart, line2Top, secondsWidth, lineHeight);
+            } else {
+                hoursZone.setBounds(0, 0, 0, 0);
+                secondsZone.setBounds(0, 0, 0, 0);
+            }
 
             g2.dispose();
         }
 
-        private void drawOutlined(Graphics2D g2, String text, Font font, Color fill, Color outline, int y) {
+        private double drawOutlined(Graphics2D g2, FontMetrics fm, String text, Font font, Color fill, Color outline, int baseline) {
+            double x = (getWidth() - fm.stringWidth(text)) / 2.0;
+
             FontRenderContext frc = g2.getFontRenderContext();
             GlyphVector gv = font.createGlyphVector(frc, text);
-            Shape shape = gv.getOutline();
-            Rectangle2D bounds = shape.getBounds2D();
-            double x = (getWidth() - bounds.getWidth()) / 2 - bounds.getX();
+            Shape shape = gv.getOutline((float) x, baseline);
 
-            Graphics2D g2d = (Graphics2D) g2.create();
-            g2d.translate(x, y);
+            g2.setStroke(new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.setColor(outline);
+            g2.draw(shape);
 
-            g2d.setStroke(new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            g2d.setColor(outline);
-            g2d.draw(shape);
+            g2.setColor(fill);
+            g2.fill(shape);
 
-            g2d.setColor(fill);
-            g2d.fill(shape);
-
-            g2d.dispose();
+            return x;
         }
     }
 }
