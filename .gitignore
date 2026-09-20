@@ -1,0 +1,7 @@
+# Build output
+/build/
+/dist/
+/out-tools/
+
+# Licensed font - see README for how to obtain it
+/src/fonts/
